@@ -10,4 +10,22 @@ void main() {
   test('invoke async native callback', () async {
     expect(await sumAsync(24, 18), 42);
   });
+
+  test('tree-sitter parses C', () {
+    final tree = parseSExpression(
+      'int add(int a, int b) { return a + b; }',
+      language: TreeSitterLanguage.c,
+    );
+    expect(tree, isNotEmpty);
+    expect(tree, contains('translation_unit'));
+  });
+
+  test('tree-sitter parses JavaScript', () {
+    final tree = parseSExpression(
+      'function add(a, b) { return a + b; }',
+      language: TreeSitterLanguage.javascript,
+    );
+    expect(tree, isNotEmpty);
+    expect(tree, contains('program'));
+  });
 }

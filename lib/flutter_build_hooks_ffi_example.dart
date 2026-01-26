@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:ffi' as ffi;
 import 'dart:isolate';
+
+import 'package:ffi/ffi.dart';
 
 import 'flutter_build_hooks_ffi_example_bindings_generated.dart' as bindings;
 
@@ -106,3 +109,85 @@ Future<SendPort> _helperIsolateSendPort = () async {
   // can start sending requests.
   return completer.future;
 }();
+
+enum TreeSitterLanguage { c, javascript }
+
+class TreeSitterToken {
+  final int startByte;
+  final int endByte;
+  final bool named;
+  final String type;
+
+  const TreeSitterToken({
+    required this.startByte,
+    required this.endByte,
+    required this.named,
+    required this.type,
+  });
+}
+
+/// Parses [source] with tree-sitter and returns an s-expression representation.
+///
+/// Returns an empty string if parsing fails.
+String parseSExpression(String source, {required TreeSitterLanguage language}) {
+  final sourcePtr = source.toNativeUtf8();
+  final resultPtr = bindings.ts_parse_sexp(
+    sourcePtr.cast<ffi.Char>(),
+    language.index,
+  );
+  malloc.free(sourcePtr);
+
+  if (resultPtr == ffi.nullptr) {
+    return '';
+  }
+
+  final result = resultPtr.cast<Utf8>().toDartString();
+  bindings.ts_free(resultPtr.cast());
+  return result;
+}
+
+Future<String> parseSExpressionAsync(
+  String source, {
+  required TreeSitterLanguage language,
+}) => Isolate.run(() => parseSExpression(source, language: language));
+
+List<TreeSitterToken> parseTokens(
+  String source, {
+  required TreeSitterLanguage language,
+}) {
+  final sourcePtr = source.toNativeUtf8();
+  final resultPtr = bindings.ts_tokens(
+    sourcePtr.cast<ffi.Char>(),
+    language.index,
+  );
+  malloc.free(sourcePtr);
+
+  if (resultPtr == ffi.nullptr) {
+    return const [];
+  }
+
+  final raw = resultPtr.cast<Utf8>().toDartString();
+  bindings.ts_free(resultPtr.cast());
+
+  final tokens = <TreeSitterToken>[];
+  for (final line in raw.split('\n')) {
+    if (line.isEmpty) continue;
+    final parts = line.split('\t');
+    if (parts.length < 4) continue;
+    final start = int.tryParse(parts[0]);
+    final end = int.tryParse(parts[1]);
+    final named = parts[2] == '1';
+    final type = parts.sublist(3).join('\t');
+    if (start == null || end == null) continue;
+    if (end <= start) continue;
+    tokens.add(
+      TreeSitterToken(startByte: start, endByte: end, named: named, type: type),
+    );
+  }
+  return tokens;
+}
+
+Future<List<TreeSitterToken>> parseTokensAsync(
+  String source, {
+  required TreeSitterLanguage language,
+}) => Isolate.run(() => parseTokens(source, language: language));
