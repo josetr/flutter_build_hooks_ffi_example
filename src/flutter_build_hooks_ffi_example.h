@@ -36,6 +36,7 @@ FFI_PLUGIN_EXPORT intptr_t sum_long_running(intptr_t a, intptr_t b);
 // language:
 //   0 = C
 //   1 = JavaScript
+//   2 = Dart
 FFI_PLUGIN_EXPORT char* ts_parse_sexp(const char* utf8_source, int32_t language);
 
 // Returns newline-delimited tokens for [utf8_source]. Each line is:
@@ -43,6 +44,17 @@ FFI_PLUGIN_EXPORT char* ts_parse_sexp(const char* utf8_source, int32_t language)
 //
 // The returned string is heap-allocated; release it by calling [ts_free].
 FFI_PLUGIN_EXPORT char* ts_tokens(const char* utf8_source, int32_t language);
+
+// Runs a tree-sitter query and returns newline-delimited captures.
+//
+// Each line is:
+//   <start_byte>\t<end_byte>\t<capture_name>\n
+//
+// The returned string is heap-allocated; release it by calling [ts_free].
+FFI_PLUGIN_EXPORT char* ts_query_captures(
+    const char* utf8_source,
+    int32_t language,
+    const char* utf8_query);
 
 // Frees memory returned by this library (e.g. [ts_parse_sexp]).
 FFI_PLUGIN_EXPORT void ts_free(void* ptr);

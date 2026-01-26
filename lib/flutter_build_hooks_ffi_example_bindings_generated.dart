@@ -31,6 +31,7 @@ external int sum_long_running(int a, int b);
 /// language:
 /// 0 = C
 /// 1 = JavaScript
+/// 2 = Dart
 @ffi.Native<ffi.Pointer<ffi.Char> Function(ffi.Pointer<ffi.Char>, ffi.Int32)>()
 external ffi.Pointer<ffi.Char> ts_parse_sexp(
   ffi.Pointer<ffi.Char> utf8_source,
@@ -45,6 +46,25 @@ external ffi.Pointer<ffi.Char> ts_parse_sexp(
 external ffi.Pointer<ffi.Char> ts_tokens(
   ffi.Pointer<ffi.Char> utf8_source,
   int language,
+);
+
+/// Runs a tree-sitter query and returns newline-delimited captures.
+///
+/// Each line is:
+/// <start_byte>\t<end_byte>\t<capture_name>\n
+///
+/// The returned string is heap-allocated; release it by calling [ts_free].
+@ffi.Native<
+  ffi.Pointer<ffi.Char> Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Int32,
+    ffi.Pointer<ffi.Char>,
+  )
+>()
+external ffi.Pointer<ffi.Char> ts_query_captures(
+  ffi.Pointer<ffi.Char> utf8_source,
+  int language,
+  ffi.Pointer<ffi.Char> utf8_query,
 );
 
 /// Frees memory returned by this library (e.g. [ts_parse_sexp]).

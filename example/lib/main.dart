@@ -1,13 +1,283 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+import 'package:flutter/services.dart';
 
 import 'package:flutter_build_hooks_ffi_example/flutter_build_hooks_ffi_example.dart'
     as flutter_build_hooks_ffi_example;
 
 void main() {
   runApp(const MyApp());
+}
+
+class _TreeSitterQueryPane extends StatelessWidget {
+  final TextEditingController controller;
+  final Future<String> query;
+  final VoidCallback onParse;
+  final Future<String>? result;
+  final Future<List<flutter_build_hooks_ffi_example.TreeSitterCapture>>?
+  captures;
+
+  const _TreeSitterQueryPane({
+    required this.controller,
+    required this.query,
+    required this.onParse,
+    required this.result,
+    required this.captures,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const baseCodeStyle = TextStyle(
+      fontFamily: 'monospace',
+      fontSize: 13,
+      height: 1.35,
+      color: Color(0xFFD4D4D4),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Column(
+        children: [
+          TextField(
+            controller: controller,
+            minLines: 4,
+            maxLines: 8,
+            style: const TextStyle(fontFamily: 'monospace'),
+            decoration: const InputDecoration(
+              labelText: 'Source',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton(onPressed: onParse, child: const Text('Parse')),
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.all(color: Theme.of(context).dividerColor),
+                borderRadius: BorderRadius.circular(12),
+                color: const Color(0xFF1E1E1E),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  children: [
+                    Expanded(
+                      child:
+                          FutureBuilder<
+                            List<
+                              flutter_build_hooks_ffi_example.TreeSitterCapture
+                            >
+                          >(
+                            future: captures,
+                            builder: (context, snapshot) {
+                              if (captures == null) {
+                                return const Center(
+                                  child: Text(
+                                    'Tap Parse to show query-based highlighting.',
+                                    style: TextStyle(color: Color(0xFFD4D4D4)),
+                                  ),
+                                );
+                              }
+                              if (snapshot.connectionState !=
+                                  ConnectionState.done) {
+                                return const Center(
+                                  child: CircularProgressIndicator(),
+                                );
+                              }
+                              if (snapshot.hasError) {
+                                return Center(
+                                  child: Text(
+                                    'Error: ${snapshot.error}',
+                                    style: const TextStyle(
+                                      color: Color(0xFFD4D4D4),
+                                    ),
+                                  ),
+                                );
+                              }
+
+                              final bytes = Uint8List.fromList(
+                                utf8.encode(controller.text),
+                              );
+                              final captureList = snapshot.data ?? const [];
+
+                              return SingleChildScrollView(
+                                child: SelectionArea(
+                                  child: SelectableText.rich(
+                                    _buildHighlightedSpan(
+                                      bytes,
+                                      captureList,
+                                      baseStyle: baseCodeStyle,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    ExpansionTile(
+                      collapsedIconColor: const Color(0xFFD4D4D4),
+                      iconColor: const Color(0xFFD4D4D4),
+                      title: const Text(
+                        'Tree (s-expression)',
+                        style: TextStyle(color: Color(0xFFD4D4D4)),
+                      ),
+                      children: [
+                        SizedBox(
+                          height: 180,
+                          child: FutureBuilder<String>(
+                            future: result,
+                            builder: (context, snapshot) {
+                              if (result == null) {
+                                return const Padding(
+                                  padding: EdgeInsets.all(12),
+                                  child: Text(
+                                    'Tap Parse to show the syntax tree.',
+                                    style: TextStyle(color: Color(0xFFD4D4D4)),
+                                  ),
+                                );
+                              }
+                              if (snapshot.connectionState !=
+                                  ConnectionState.done) {
+                                return const Center(
+                                  child: CircularProgressIndicator(),
+                                );
+                              }
+                              if (snapshot.hasError) {
+                                return Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: Text(
+                                    'Error: ${snapshot.error}',
+                                    style: const TextStyle(
+                                      color: Color(0xFFD4D4D4),
+                                    ),
+                                  ),
+                                );
+                              }
+                              return SingleChildScrollView(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12),
+                                  child: SelectableText(
+                                    snapshot.data ?? '',
+                                    style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 12,
+                                      color: Color(0xFFD4D4D4),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    FutureBuilder<String>(
+                      future: query,
+                      builder: (context, snapshot) => Text(
+                        snapshot.hasData
+                            ? 'Query loaded (${snapshot.data!.length} chars)'
+                            : 'Loading query…',
+                        style: const TextStyle(
+                          color: Color(0xFF9DA5B4),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  TextSpan _buildHighlightedSpan(
+    Uint8List utf8Bytes,
+    List<flutter_build_hooks_ffi_example.TreeSitterCapture> captures, {
+    required TextStyle baseStyle,
+  }) {
+    final spans = <InlineSpan>[];
+    var cursor = 0;
+
+    for (final capture in captures) {
+      final start = capture.startByte.clamp(0, utf8Bytes.length);
+      final end = capture.endByte.clamp(0, utf8Bytes.length);
+      if (end <= start) continue;
+      if (start < cursor) continue; // skip overlaps for this demo
+
+      if (start > cursor) {
+        spans.add(
+          TextSpan(
+            text: utf8.decode(utf8Bytes.sublist(cursor, start)),
+            style: baseStyle,
+          ),
+        );
+      }
+
+      spans.add(
+        TextSpan(
+          text: utf8.decode(utf8Bytes.sublist(start, end)),
+          style: baseStyle.copyWith(color: _captureColor(capture.name)),
+        ),
+      );
+      cursor = end;
+    }
+
+    if (cursor < utf8Bytes.length) {
+      spans.add(
+        TextSpan(
+          text: utf8.decode(utf8Bytes.sublist(cursor)),
+          style: baseStyle,
+        ),
+      );
+    }
+
+    return TextSpan(style: baseStyle, children: spans);
+  }
+
+  Color _captureColor(String captureName) {
+    final name = captureName.startsWith('@')
+        ? captureName.substring(1)
+        : captureName;
+    final group = name.split('.').first;
+
+    switch (group) {
+      case 'comment':
+        return const Color(0xFF6A9955);
+      case 'string':
+        return const Color(0xFFCE9178);
+      case 'number':
+        return const Color(0xFFB5CEA8);
+      case 'keyword':
+        return const Color(0xFF569CD6);
+      case 'type':
+        return const Color(0xFF4EC9B0);
+      case 'function':
+        return const Color(0xFFDCDCAA);
+      case 'constant':
+      case 'boolean':
+        return const Color(0xFF569CD6);
+      case 'operator':
+      case 'punctuation':
+        return const Color(0xFFD4D4D4);
+      case 'variable':
+      case 'property':
+      case 'attribute':
+      case 'identifier':
+        return const Color(0xFF9CDCFE);
+      default:
+        return const Color(0xFFD4D4D4);
+    }
+  }
 }
 
 class MyApp extends StatefulWidget {
@@ -28,11 +298,31 @@ class _MyAppState extends State<MyApp> {
   final TextEditingController _jsController = TextEditingController(
     text: 'function add(a, b) { return a + b; }\nadd(1, 2);',
   );
+  final TextEditingController _dartController = TextEditingController(
+    text: r'''
+class Greeter {
+  final String name;
+  Greeter(this.name);
+  String greet() => "Hello, $name";
+}
+
+void main() {
+  // comment
+  print(Greeter("World").greet());
+}
+''',
+  );
 
   Future<String>? _cTree;
   Future<String>? _jsTree;
+  Future<String>? _dartTree;
   Future<List<flutter_build_hooks_ffi_example.TreeSitterToken>>? _cTokens;
   Future<List<flutter_build_hooks_ffi_example.TreeSitterToken>>? _jsTokens;
+  Future<List<flutter_build_hooks_ffi_example.TreeSitterCapture>>?
+  _dartCaptures;
+  late final Future<String> _dartHighlightsQuery = rootBundle.loadString(
+    'assets/tree_sitter/dart/highlights.scm',
+  );
 
   @override
   void initState() {
@@ -45,6 +335,7 @@ class _MyAppState extends State<MyApp> {
   void dispose() {
     _cController.dispose();
     _jsController.dispose();
+    _dartController.dispose();
     super.dispose();
   }
 
@@ -61,7 +352,7 @@ class _MyAppState extends State<MyApp> {
             child: Column(
               children: [
                 const Text(
-                  'This app uses Dart build hooks to (1) clone tree-sitter + two grammars and '
+                  'This app uses Dart build hooks to (1) clone tree-sitter + three grammars and '
                   '(2) build a native library, then calls it via Dart FFI.',
                   style: textStyle,
                   textAlign: .center,
@@ -88,13 +379,14 @@ class _MyAppState extends State<MyApp> {
                 ),
                 const Divider(height: 32),
                 DefaultTabController(
-                  length: 2,
+                  length: 3,
                   child: Column(
                     children: [
                       const TabBar(
                         tabs: [
                           Tab(text: 'C'),
                           Tab(text: 'JavaScript'),
+                          Tab(text: 'Dart (query highlights)'),
                         ],
                       ),
                       SizedBox(
@@ -148,6 +440,32 @@ class _MyAppState extends State<MyApp> {
                               language: flutter_build_hooks_ffi_example
                                   .TreeSitterLanguage
                                   .javascript,
+                            ),
+                            _TreeSitterQueryPane(
+                              controller: _dartController,
+                              query: _dartHighlightsQuery,
+                              onParse: () => setState(() {
+                                _dartTree = flutter_build_hooks_ffi_example
+                                    .parseSExpressionAsync(
+                                      _dartController.text,
+                                      language: flutter_build_hooks_ffi_example
+                                          .TreeSitterLanguage
+                                          .dart,
+                                    );
+                                _dartCaptures = _dartHighlightsQuery.then(
+                                  (q) => flutter_build_hooks_ffi_example
+                                      .parseQueryCapturesAsync(
+                                        _dartController.text,
+                                        language:
+                                            flutter_build_hooks_ffi_example
+                                                .TreeSitterLanguage
+                                                .dart,
+                                        query: q,
+                                      ),
+                                );
+                              }),
+                              result: _dartTree,
+                              captures: _dartCaptures,
                             ),
                           ],
                         ),
@@ -478,6 +796,8 @@ class _TreeSitterPane extends StatelessWidget {
           'export',
           'from',
         }.contains(type);
+      case flutter_build_hooks_ffi_example.TreeSitterLanguage.dart:
+        return false;
     }
   }
 }

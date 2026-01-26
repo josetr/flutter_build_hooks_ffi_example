@@ -110,7 +110,7 @@ Future<SendPort> _helperIsolateSendPort = () async {
   return completer.future;
 }();
 
-enum TreeSitterLanguage { c, javascript }
+enum TreeSitterLanguage { c, javascript, dart }
 
 class TreeSitterToken {
   final int startByte;
@@ -123,6 +123,18 @@ class TreeSitterToken {
     required this.endByte,
     required this.named,
     required this.type,
+  });
+}
+
+class TreeSitterCapture {
+  final int startByte;
+  final int endByte;
+  final String name;
+
+  const TreeSitterCapture({
+    required this.startByte,
+    required this.endByte,
+    required this.name,
   });
 }
 
@@ -191,3 +203,55 @@ Future<List<TreeSitterToken>> parseTokensAsync(
   String source, {
   required TreeSitterLanguage language,
 }) => Isolate.run(() => parseTokens(source, language: language));
+
+List<TreeSitterCapture> parseQueryCaptures(
+  String source, {
+  required TreeSitterLanguage language,
+  required String query,
+}) {
+  final sourcePtr = source.toNativeUtf8();
+  final queryPtr = query.toNativeUtf8();
+  final resultPtr = bindings.ts_query_captures(
+    sourcePtr.cast<ffi.Char>(),
+    language.index,
+    queryPtr.cast<ffi.Char>(),
+  );
+  malloc.free(sourcePtr);
+  malloc.free(queryPtr);
+
+  if (resultPtr == ffi.nullptr) {
+    return const [];
+  }
+
+  final raw = resultPtr.cast<Utf8>().toDartString();
+  bindings.ts_free(resultPtr.cast());
+
+  final captures = <TreeSitterCapture>[];
+  for (final line in raw.split('\n')) {
+    if (line.isEmpty) continue;
+    final parts = line.split('\t');
+    if (parts.length < 3) continue;
+    final start = int.tryParse(parts[0]);
+    final end = int.tryParse(parts[1]);
+    final name = parts.sublist(2).join('\t');
+    if (start == null || end == null) continue;
+    if (end <= start) continue;
+    captures.add(TreeSitterCapture(startByte: start, endByte: end, name: name));
+  }
+
+  captures.sort((a, b) {
+    final start = a.startByte.compareTo(b.startByte);
+    if (start != 0) return start;
+    return b.endByte.compareTo(a.endByte);
+  });
+
+  return captures;
+}
+
+Future<List<TreeSitterCapture>> parseQueryCapturesAsync(
+  String source, {
+  required TreeSitterLanguage language,
+  required String query,
+}) => Isolate.run(
+  () => parseQueryCaptures(source, language: language, query: query),
+);

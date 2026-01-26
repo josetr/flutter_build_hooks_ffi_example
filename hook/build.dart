@@ -96,6 +96,9 @@ Future<void> main(List<String> args) async {
     final treeSitterJavascriptDir = Directory.fromUri(
       thirdPartyDir.uri.resolve('tree-sitter-javascript/'),
     );
+    final treeSitterDartDir = Directory.fromUri(
+      thirdPartyDir.uri.resolve('tree-sitter-dart/'),
+    );
 
     await _ensureGitClone(
       logger: logger,
@@ -112,6 +115,12 @@ Future<void> main(List<String> args) async {
       logger: logger,
       directory: treeSitterJavascriptDir,
       url: 'https://github.com/tree-sitter/tree-sitter-javascript.git',
+    );
+    await _ensureGitClone(
+      logger: logger,
+      directory: treeSitterDartDir,
+      url: 'https://github.com/UserNobody14/tree-sitter-dart.git',
+      ref: 'master',
     );
 
     final treeSitterInclude = Directory.fromUri(
@@ -170,6 +179,26 @@ Future<void> main(List<String> args) async {
                 .toFilePath(),
             destinationDirectory: stagedGrammarDir,
             destinationFileName: 'tree_sitter_javascript_scanner.c',
+          )
+          case final path?)
+        path,
+      if (await _copySource(
+            logger: logger,
+            sourcePath: treeSitterDartDir.uri
+                .resolve('src/parser.c')
+                .toFilePath(),
+            destinationDirectory: stagedGrammarDir,
+            destinationFileName: 'tree_sitter_dart_parser.c',
+          )
+          case final path?)
+        path,
+      if (await _copySource(
+            logger: logger,
+            sourcePath: treeSitterDartDir.uri
+                .resolve('src/scanner.c')
+                .toFilePath(),
+            destinationDirectory: stagedGrammarDir,
+            destinationFileName: 'tree_sitter_dart_scanner.c',
           )
           case final path?)
         path,
