@@ -70,3 +70,48 @@ external ffi.Pointer<ffi.Char> ts_query_captures(
 /// Frees memory returned by this library (e.g. [ts_parse_sexp]).
 @ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>()
 external void ts_free(ffi.Pointer<ffi.Void> ptr);
+
+/// --- tree-sitter incremental document API -----------------------------------
+@ffi.Native<ffi.Pointer<ffi.Void> Function(ffi.Int32)>()
+external ffi.Pointer<ffi.Void> ts_doc_new(int language);
+
+@ffi.Native<ffi.Void Function(ffi.Pointer<ffi.Void>)>()
+external void ts_doc_delete(ffi.Pointer<ffi.Void> doc);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.Void>,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Uint32,
+    ffi.Uint32,
+  )
+>()
+external void ts_doc_edit(
+  ffi.Pointer<ffi.Void> doc,
+  int startByte,
+  int oldEndByte,
+  int newEndByte,
+  int startRow,
+  int startCol,
+  int oldEndRow,
+  int oldEndCol,
+  int newEndRow,
+  int newEndCol,
+);
+
+@ffi.Native<ffi.Uint8 Function(ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Char>)>()
+external int ts_doc_reparse(ffi.Pointer<ffi.Void> doc, ffi.Pointer<ffi.Char> utf8Source);
+
+@ffi.Native<
+  ffi.Pointer<ffi.Char> Function(ffi.Pointer<ffi.Void>, ffi.Pointer<ffi.Char>)
+>()
+external ffi.Pointer<ffi.Char> ts_doc_query_captures(
+  ffi.Pointer<ffi.Void> doc,
+  ffi.Pointer<ffi.Char> utf8Query,
+);

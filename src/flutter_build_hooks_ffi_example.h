@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <stdbool.h>
+
 #if _WIN32
 #include <windows.h>
 #else
@@ -58,3 +60,37 @@ FFI_PLUGIN_EXPORT char* ts_query_captures(
 
 // Frees memory returned by this library (e.g. [ts_parse_sexp]).
 FFI_PLUGIN_EXPORT void ts_free(void* ptr);
+
+// --- tree-sitter incremental document API -----------------------------------
+//
+// Creates a document (TSParser + last TSTree) for a given language.
+// Returns NULL on failure.
+FFI_PLUGIN_EXPORT void* ts_doc_new(int32_t language);
+
+// Destroys the document and releases all resources.
+FFI_PLUGIN_EXPORT void ts_doc_delete(void* doc);
+
+// Applies an edit to the currently stored tree (ts_tree_edit). Must be called
+// before reparsing if you want correct incremental parsing.
+FFI_PLUGIN_EXPORT void ts_doc_edit(
+    void* doc,
+    uint32_t start_byte,
+    uint32_t old_end_byte,
+    uint32_t new_end_byte,
+    uint32_t start_row,
+    uint32_t start_col,
+    uint32_t old_end_row,
+    uint32_t old_end_col,
+    uint32_t new_end_row,
+    uint32_t new_end_col);
+
+// Re-parses the full source string, reusing the previous tree for incremental
+// parsing. Returns true on success.
+FFI_PLUGIN_EXPORT bool ts_doc_reparse(void* doc, const char* utf8_source);
+
+// Returns newline-delimited query captures for the currently stored tree.
+// Each line is:
+//   <start_byte>\t<end_byte>\t<capture_name>\n
+//
+// Returned string is heap-allocated; free with ts_free.
+FFI_PLUGIN_EXPORT char* ts_doc_query_captures(void* doc, const char* utf8_query);

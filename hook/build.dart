@@ -1,8 +1,103 @@
 import 'dart:io';
 
+import 'package:code_assets/code_assets.dart';
 import 'package:native_toolchain_c/native_toolchain_c.dart';
 import 'package:logging/logging.dart';
 import 'package:hooks/hooks.dart';
+
+Uri? _findVs2022MsvcTool({
+  required Logger logger,
+  required String toolName,
+  required String targetArchFolder,
+}) {
+  // Prefer VS 2022 Community (commonly installed with the Desktop C++ workload).
+  const vsRoot = r'C:\Program Files\Microsoft Visual Studio\2022\Community';
+  final msvcRoot = Directory(
+    '$vsRoot\\VC\\Tools\\MSVC',
+  );
+  if (!msvcRoot.existsSync()) {
+    logger.info('VS2022 MSVC root not found: ${msvcRoot.path}');
+    return null;
+  }
+
+  // Pick the newest MSVC version folder.
+  final versions =
+      msvcRoot
+          .listSync(followLinks: false)
+          .whereType<Directory>()
+          .toList()
+        ..sort((a, b) => b.path.compareTo(a.path));
+  for (final v in versions) {
+    final exe = File(
+      '${v.path}\\bin\\Hostx64\\$targetArchFolder\\$toolName.exe',
+    );
+    if (exe.existsSync()) {
+      logger.info('Using MSVC tool from VS2022: ${exe.path}');
+      return exe.uri;
+    }
+  }
+
+  logger.warning('Failed to locate $toolName.exe under ${msvcRoot.path}');
+  return null;
+}
+
+void _forceWindowsCompilerIfMissing(BuildInput input, Logger logger) {
+  final cfg = input.config.code;
+  if (cfg.targetOS != OS.windows) return;
+  if (cfg.cCompiler?.compiler != null) return;
+
+  // native_toolchain_c defaults to the latest Visual Studio instance; on some
+  // machines that may be installed without MSVC (cl.exe). Prefer VS2022 when
+  // present so `dart test` and build hooks work out-of-the-box.
+  final targetArchFolder = switch (cfg.targetArchitecture) {
+    Architecture.ia32 => 'x86',
+    Architecture.x64 => 'x64',
+    Architecture.arm64 => 'arm64',
+    _ => 'x64',
+  };
+
+  final cl = _findVs2022MsvcTool(
+    logger: logger,
+    toolName: 'cl',
+    targetArchFolder: targetArchFolder,
+  );
+  final lib = _findVs2022MsvcTool(
+    logger: logger,
+    toolName: 'lib',
+    targetArchFolder: targetArchFolder,
+  );
+  final link = _findVs2022MsvcTool(
+    logger: logger,
+    toolName: 'link',
+    targetArchFolder: targetArchFolder,
+  );
+  if (cl == null || lib == null || link == null) return;
+
+  final configJson = input.config.json;
+  final extensions =
+      (configJson['extensions'] as Map?)?.cast<String, Object?>() ??
+      <String, Object?>{};
+  configJson['extensions'] = extensions;
+
+  final codeAssets =
+      (extensions['code_assets'] as Map?)?.cast<String, Object?>() ??
+      <String, Object?>{};
+  extensions['code_assets'] = codeAssets;
+
+  final cCompiler =
+      (codeAssets['c_compiler'] as Map?)?.cast<String, Object?>() ??
+      <String, Object?>{};
+  codeAssets['c_compiler'] = cCompiler;
+
+  // These are file paths (strings) in the schema.
+  cCompiler['cc'] = cl.toFilePath();
+  cCompiler['ar'] = lib.toFilePath();
+  cCompiler['ld'] = link.toFilePath();
+  // Work around native_toolchain_c accessing `cCompilerConfig.windows` without
+  // guarding for null. An empty object means "Windows config present but no
+  // developer command prompt override".
+  cCompiler['windows'] = (cCompiler['windows'] as Map?) ?? <String, Object?>{};
+}
 
 Future<void> _ensureGitClone({
   required Logger logger,
@@ -80,6 +175,8 @@ Future<void> main(List<String> args) async {
       ..level = Level.ALL
       ..onRecord.listen((record) => stdout.writeln(record.message));
     final logger = Logger('native');
+
+    _forceWindowsCompilerIfMissing(input, logger);
 
     final packageName = input.packageName;
 

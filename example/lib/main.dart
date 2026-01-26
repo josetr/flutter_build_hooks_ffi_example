@@ -1,8 +1,12 @@
 import 'dart:async';
-import 'dart:isolate';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:re_editor/re_editor.dart';
+import 'package:re_highlight/languages/c.dart';
+import 'package:re_highlight/languages/dart.dart';
+import 'package:re_highlight/languages/javascript.dart';
+import 'package:re_highlight/styles/vs2015.dart';
 
 import 'package:flutter_build_hooks_ffi_example/flutter_build_hooks_ffi_example.dart'
     as ts;
@@ -13,11 +17,16 @@ void main() {
 
 enum _FileLanguage { c, javascript, dart }
 
+enum _HighlightEngine { reHighlight, treeSitter }
+
 class _EditorFile {
   final String path;
   final _FileLanguage language;
   late final CodeLineEditingController controller;
   late final _TreeSitterHighlighter highlighter;
+  final ValueNotifier<_HighlightEngine> highlightEngine = ValueNotifier(
+    _HighlightEngine.treeSitter,
+  );
 
   _EditorFile({
     required this.path,
@@ -25,34 +34,69 @@ class _EditorFile {
     required String initialText,
   }) {
     highlighter = _TreeSitterHighlighter(language: language);
+    highlighter.initialize(initialText);
     controller = CodeLineEditingController(
       codeLines: initialText.codeLines,
-      options: const CodeLineOptions(lineBreak: TextLineBreak.lf, indentSize: 2),
-      spanBuilder: ({
-        required BuildContext context,
-        required int index,
-        required CodeLine codeLine,
-        required TextSpan textSpan,
-        required TextStyle style,
-      }) {
-        return highlighter.buildLineSpan(
-          lineIndex: index,
-          lineText: codeLine.text,
-          baseStyle: style,
-          baseSpan: textSpan,
-        );
-      },
+      options: const CodeLineOptions(
+        lineBreak: TextLineBreak.lf,
+        indentSize: 2,
+      ),
+      spanBuilder:
+          ({
+            required BuildContext context,
+            required int index,
+            required CodeLine codeLine,
+            required TextSpan textSpan,
+            required TextStyle style,
+          }) {
+            if (highlightEngine.value != _HighlightEngine.treeSitter) {
+              return textSpan;
+            }
+            return highlighter.buildLineSpan(
+              lineIndex: index,
+              lineText: codeLine.text,
+              baseStyle: style,
+              baseSpan: textSpan,
+            );
+          },
     );
 
     controller.addListener(() {
-      highlighter.schedule(controller.text, onUpdated: controller.forceRepaint);
+      final pre = controller.preValue;
+      if (pre?.codeLines == controller.codeLines) {
+        return;
+      }
+      if (highlightEngine.value == _HighlightEngine.treeSitter) {
+        highlighter.schedule(
+          controller.text,
+          onUpdated: controller.forceRepaint,
+        );
+      }
     });
-    highlighter.schedule(controller.text, onUpdated: controller.forceRepaint);
+    highlightEngine.addListener(() {
+      final mode = highlightEngine.value;
+      highlighter.setEnabled(mode == _HighlightEngine.treeSitter);
+      if (mode == _HighlightEngine.treeSitter) {
+        highlighter.schedule(
+          controller.text,
+          onUpdated: controller.forceRepaint,
+        );
+      }
+      controller.forceRepaint();
+    });
+
+    highlighter.setEnabled(
+      highlightEngine.value == _HighlightEngine.treeSitter,
+    );
+    if (highlightEngine.value == _HighlightEngine.treeSitter) {
+      highlighter.schedule(controller.text, onUpdated: controller.forceRepaint);
+    }
   }
 
   void dispose() {
     controller.dispose();
     highlighter.dispose();
+    highlightEngine.dispose();
   }
 }
 
@@ -87,6 +131,36 @@ class _VsCodeLikeAppState extends State<VsCodeLikeApp> {
         initialText: _seedDart,
       ),
     ];
+    unawaited(_loadHighlightQueries());
+  }
+
+  Future<void> _loadHighlightQueries() async {
+    try {
+      final c = await rootBundle.loadString(
+        'assets/tree_sitter/c/highlights.scm',
+      );
+      final js = await rootBundle.loadString(
+        'assets/tree_sitter/javascript/highlights.scm',
+      );
+      final dart = await rootBundle.loadString(
+        'assets/tree_sitter/dart/highlights.scm',
+      );
+
+      for (final f in _files) {
+        final query = switch (f.language) {
+          _FileLanguage.c => c,
+          _FileLanguage.javascript => js,
+          _FileLanguage.dart => dart,
+        };
+        f.highlighter.setQuery(query);
+        f.highlighter.schedule(
+          f.controller.text,
+          onUpdated: f.controller.forceRepaint,
+        );
+      }
+    } catch (_) {
+      // If assets fail to load, we'll fall back to token-based highlighting.
+    }
   }
 
   @override
@@ -331,9 +405,7 @@ class _Tab extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
             fontSize: 12.5,
-            color: active
-                ? const Color(0xFFFFFFFF)
-                : const Color(0xFFCCCCCC),
+            color: active ? const Color(0xFFFFFFFF) : const Color(0xFFCCCCCC),
           ),
         ),
       ),
@@ -358,39 +430,51 @@ class _EditorSurface extends StatelessWidget {
 
     return DecoratedBox(
       decoration: const BoxDecoration(color: Color(0xFF1E1E1E)),
-      child: CodeEditor(
-        controller: file.controller,
-        style: CodeEditorStyle(
-          fontFamily: baseStyle.fontFamily,
-          fontFamilyFallback: baseStyle.fontFamilyFallback,
-          fontSize: baseStyle.fontSize,
-          fontHeight: baseStyle.height,
-          textColor: baseStyle.color,
-          backgroundColor: const Color(0xFF1E1E1E),
-          selectionColor: const Color(0xFF264F78),
-          cursorColor: const Color(0xFFFFFFFF),
-          cursorLineColor: const Color(0xFF2A2D2E),
-        ),
-        indicatorBuilder: (context, editingController, chunkController, notifier) {
-          return Row(
-            children: [
-              DefaultCodeLineNumber(
-                controller: editingController,
-                notifier: notifier,
-                textStyle: const TextStyle(
-                  fontFamily: 'Consolas',
-                  fontFamilyFallback: ['Menlo', 'monospace'],
-                  fontSize: 12,
-                  height: 1.4,
-                  color: Color(0xFF858585),
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
+      child: ValueListenableBuilder<_HighlightEngine>(
+        valueListenable: file.highlightEngine,
+        builder: (context, engine, _) {
+          final codeTheme = switch (engine) {
+            _HighlightEngine.reHighlight => _reHighlightTheme(file.language),
+            _HighlightEngine.treeSitter => null,
+          };
+
+          return CodeEditor(
+            controller: file.controller,
+            style: CodeEditorStyle(
+              fontFamily: baseStyle.fontFamily,
+              fontFamilyFallback: baseStyle.fontFamilyFallback,
+              fontSize: baseStyle.fontSize,
+              fontHeight: baseStyle.height,
+              textColor: baseStyle.color,
+              backgroundColor: const Color(0xFF1E1E1E),
+              selectionColor: const Color(0xFF264F78),
+              cursorColor: const Color(0xFFFFFFFF),
+              cursorLineColor: const Color(0xFF2A2D2E),
+              codeTheme: codeTheme,
+            ),
+            indicatorBuilder:
+                (context, editingController, chunkController, notifier) {
+                  return Row(
+                    children: [
+                      DefaultCodeLineNumber(
+                        controller: editingController,
+                        notifier: notifier,
+                        textStyle: const TextStyle(
+                          fontFamily: 'Consolas',
+                          fontFamilyFallback: ['Menlo', 'monospace'],
+                          fontSize: 12,
+                          height: 1.4,
+                          color: Color(0xFF858585),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                  );
+                },
+            padding: const EdgeInsets.fromLTRB(0, 10, 16, 10),
+            maxLengthSingleLineRendering: 6000,
           );
         },
-        padding: const EdgeInsets.fromLTRB(0, 10, 16, 10),
-        maxLengthSingleLineRendering: 6000,
       ),
     );
   }
@@ -427,19 +511,89 @@ class _StatusBar extends StatelessWidget {
                 },
               ),
               const SizedBox(width: 12),
-              ValueListenableBuilder<_TreeSitterHighlightStats>(
-                valueListenable: file.highlighter.stats,
-                builder: (context, stats, _) {
-                  final label = switch (stats.state) {
-                    _TreeSitterHighlightState.idle => 'tree-sitter',
-                    _TreeSitterHighlightState.parsing => 'tree-sitter: parsing…',
-                    _TreeSitterHighlightState.disabled =>
-                      'tree-sitter: disabled (${stats.reason})',
-                    _TreeSitterHighlightState.error => 'tree-sitter: error',
+              ValueListenableBuilder<_HighlightEngine>(
+                valueListenable: file.highlightEngine,
+                builder: (context, engine, _) {
+                  final label = switch (engine) {
+                    _HighlightEngine.reHighlight => 'HL: RE',
+                    _HighlightEngine.treeSitter => 'HL: TS',
                   };
-                  return Text(
-                    label,
-                    style: const TextStyle(fontSize: 12, color: Colors.white),
+                  return InkWell(
+                    onTap: () {
+                      final next = switch (engine) {
+                        _HighlightEngine.reHighlight =>
+                          _HighlightEngine.treeSitter,
+                        _HighlightEngine.treeSitter =>
+                          _HighlightEngine.reHighlight,
+                      };
+                      file.highlightEngine.value = next;
+                    },
+                    child: Text(
+                      label,
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(width: 12),
+              ValueListenableBuilder<_HighlightEngine>(
+                valueListenable: file.highlightEngine,
+                builder: (context, engine, _) {
+                  if (engine != _HighlightEngine.treeSitter) {
+                    return const Text(
+                      're-highlight',
+                      style: TextStyle(fontSize: 12, color: Colors.white),
+                    );
+                  }
+
+                  return ValueListenableBuilder<_TreeSitterHighlightStats>(
+                    valueListenable: file.highlighter.stats,
+                    builder: (context, stats, _) {
+                      final label = switch (stats.state) {
+                        _TreeSitterHighlightState.idle => 'tree-sitter',
+                        _TreeSitterHighlightState.parsing =>
+                          'tree-sitter: parsing…',
+                        _TreeSitterHighlightState.disabled =>
+                          'tree-sitter: disabled (${stats.reason})',
+                        _TreeSitterHighlightState.error =>
+                          stats.reason == null
+                              ? 'tree-sitter: error'
+                              : 'tree-sitter: error (details)',
+                      };
+                      return InkWell(
+                        onTap:
+                            (stats.state == _TreeSitterHighlightState.error &&
+                                stats.reason != null)
+                            ? () {
+                                showDialog<void>(
+                                  context: context,
+                                  builder: (context) {
+                                    return AlertDialog(
+                                      title: const Text('tree-sitter error'),
+                                      content: SingleChildScrollView(
+                                        child: SelectableText(stats.reason!),
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.pop(context),
+                                          child: const Text('Close'),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                );
+                              }
+                            : null,
+                        child: Text(
+                          label,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.white,
+                          ),
+                        ),
+                      );
+                    },
                   );
                 },
               ),
@@ -461,62 +615,187 @@ class _TreeSitterHighlightStats {
 
 class _TreeSitterHighlighter {
   static const int _maxBytesForHighlight = 6 * 1024 * 1024;
-  static const Duration _debounce = Duration(milliseconds: 180);
 
   final _FileLanguage language;
+  final ValueNotifier<bool> enabled = ValueNotifier(true);
   final ValueNotifier<_TreeSitterHighlightStats> stats = ValueNotifier(
     const _TreeSitterHighlightStats(_TreeSitterHighlightState.idle),
   );
 
-  Timer? _debounceTimer;
   int _revision = 0;
   bool _disposed = false;
-  List<List<int>> _lineSpansTriples = const [];
+  String _text = '';
+  List<int> _lineStarts = const [0];
+  List<_Span> _spans = const [];
+  String? _query;
+  ts.TreeSitterDocument? _doc;
+  bool _postFrameScheduled = false;
+  bool _needsRun = false;
 
   _TreeSitterHighlighter({required this.language});
 
+  void setEnabled(bool value) {
+    if (_disposed) return;
+    if (enabled.value == value) return;
+    enabled.value = value;
+
+    if (!value) {
+      _spans = const [];
+      stats.value = const _TreeSitterHighlightStats(
+        _TreeSitterHighlightState.disabled,
+        reason: 'toggled off',
+      );
+    } else {
+      stats.value = const _TreeSitterHighlightStats(
+        _TreeSitterHighlightState.idle,
+      );
+    }
+  }
+
+  void initialize(String initialText) {
+    if (_text.isNotEmpty) return;
+    _text = initialText;
+    _lineStarts = _lineStartsUtf16ForText(initialText);
+    try {
+      _doc = ts.TreeSitterDocument.create(
+        language: switch (language) {
+          _FileLanguage.c => ts.TreeSitterLanguage.c,
+          _FileLanguage.javascript => ts.TreeSitterLanguage.javascript,
+          _FileLanguage.dart => ts.TreeSitterLanguage.dart,
+        },
+      );
+      _doc!.reparse(initialText);
+    } catch (e, st) {
+      final details = '$e\n\n$st';
+      debugPrint(details);
+      stats.value = _TreeSitterHighlightStats(
+        _TreeSitterHighlightState.error,
+        reason: details,
+      );
+      _doc = null;
+    }
+  }
+
   void dispose() {
     _disposed = true;
-    _debounceTimer?.cancel();
+    _doc?.dispose();
+    enabled.dispose();
     stats.dispose();
+  }
+
+  void setQuery(String? query) {
+    _query = query;
   }
 
   void schedule(String text, {required VoidCallback onUpdated}) {
     if (_disposed) return;
+    if (!enabled.value) return;
+
+    final change = _computeChange(_text, text);
+    _applyChangeToSpans(change);
+
+    // IMPORTANT: Apply `ts_tree_edit` immediately so the native document stays
+    // in sync even if we debounce/cancel reparses. Otherwise, the next debounced
+    // edit would be computed against the updated Dart text but applied to a
+    // stale native tree, causing unstable highlighting.
+    final docForEdit = _doc;
+    if (docForEdit != null &&
+        (change.startUtf16 != change.oldEndUtf16 ||
+            change.startUtf16 != change.newEndUtf16)) {
+      docForEdit.edit(
+        startByte: change.startByte,
+        oldEndByte: change.oldEndByte,
+        newEndByte: change.newEndByte,
+        startRow: change.startRow,
+        startCol: change.startCol,
+        oldEndRow: change.oldEndRow,
+        oldEndCol: change.oldEndCol,
+        newEndRow: change.newEndRow,
+        newEndCol: change.newEndCol,
+      );
+    }
+
+    _text = text;
+    _lineStarts = _lineStartsUtf16ForText(text);
 
     _revision++;
-    final rev = _revision;
-    _debounceTimer?.cancel();
-    _debounceTimer = Timer(_debounce, () async {
-      if (_disposed || rev != _revision) return;
+    _needsRun = true;
+    if (_postFrameScheduled) return;
+    _postFrameScheduled = true;
 
-      if (text.length > _maxBytesForHighlight) {
-        _lineSpansTriples = const [];
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _postFrameScheduled = false;
+      if (_disposed) return;
+      if (!enabled.value) return;
+      if (!_needsRun) return;
+      _needsRun = false;
+
+      final rev = _revision;
+
+      final doc = _doc;
+      if (doc == null) {
+        _spans = const [];
+        stats.value = const _TreeSitterHighlightStats(
+          _TreeSitterHighlightState.error,
+          reason: 'tree-sitter document not initialized',
+        );
+        WidgetsBinding.instance.addPostFrameCallback((_) => onUpdated());
+        return;
+      }
+
+      if (_text.length > _maxBytesForHighlight) {
+        _spans = const [];
         stats.value = const _TreeSitterHighlightStats(
           _TreeSitterHighlightState.disabled,
           reason: '> 6MB',
         );
-        onUpdated();
+        WidgetsBinding.instance.addPostFrameCallback((_) => onUpdated());
         return;
       }
 
-      stats.value =
-          const _TreeSitterHighlightStats(_TreeSitterHighlightState.parsing);
+      stats.value = const _TreeSitterHighlightStats(
+        _TreeSitterHighlightState.parsing,
+      );
       try {
-        final payload = _HighlightPayload(text: text, language: language);
-        final lineSpans = await Isolate.run(() => _highlightWorker(payload));
+        // Incremental parse on UI isolate: reuse the already-edited tree.
+        final ok = doc.reparse(_text);
+        if (!ok) {
+          throw StateError('ts_doc_reparse failed');
+        }
+
+        final query = _query;
+        if (query == null || query.trim().isEmpty) {
+          _spans = const [];
+        } else {
+          final captures = doc.queryCaptures(query);
+          _spans = _capturesToSpans(_text, captures);
+        }
         if (_disposed || rev != _revision) return;
-        _lineSpansTriples = lineSpans;
         stats.value = const _TreeSitterHighlightStats(
           _TreeSitterHighlightState.idle,
         );
-        onUpdated();
-      } catch (_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => onUpdated());
+      } catch (e, st) {
         if (_disposed || rev != _revision) return;
-        _lineSpansTriples = const [];
-        stats.value =
-            const _TreeSitterHighlightStats(_TreeSitterHighlightState.error);
-        onUpdated();
+        _spans = const [];
+        final details = '$e\n\n$st';
+        debugPrint(details);
+        stats.value = _TreeSitterHighlightStats(
+          _TreeSitterHighlightState.error,
+          reason: details,
+        );
+        WidgetsBinding.instance.addPostFrameCallback((_) => onUpdated());
+      }
+      // If more edits came in while we were running, schedule another pass.
+      if (_needsRun && !_postFrameScheduled) {
+        _postFrameScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _postFrameScheduled = false;
+          if (_disposed || !enabled.value) return;
+          if (_needsRun) {
+            schedule(_text, onUpdated: onUpdated);
+          }
+        });
       }
     });
   }
@@ -527,30 +806,44 @@ class _TreeSitterHighlighter {
     required TextStyle baseStyle,
     required TextSpan baseSpan,
   }) {
-    if (lineIndex < 0 || lineIndex >= _lineSpansTriples.length) {
-      return baseSpan;
-    }
+    if (!enabled.value) return baseSpan;
+    if (lineIndex < 0 || lineIndex >= _lineStarts.length) return baseSpan;
 
-    final triples = _lineSpansTriples[lineIndex];
+    final lineStart = _lineStarts[lineIndex];
+    final lineEnd = (lineIndex + 1 < _lineStarts.length)
+        ? (_lineStarts[lineIndex + 1] - 1).clamp(0, _text.length)
+        : _text.length;
+
+    if (lineEnd <= lineStart) return baseSpan;
+
+    final triples = _triplesForLine(lineStart, lineEnd);
     if (triples.isEmpty) return baseSpan;
 
     final children = <TextSpan>[];
     var cursor = 0;
 
     for (var i = 0; i + 2 < triples.length; i += 3) {
-      final start = triples[i].clamp(0, lineText.length);
-      final end = triples[i + 1].clamp(0, lineText.length);
+      final start = (triples[i] - lineStart).clamp(0, lineText.length);
+      final end = (triples[i + 1] - lineStart).clamp(0, lineText.length);
       final color = triples[i + 2];
       if (end <= start) continue;
 
-      if (start > cursor) {
+      // Guard against overlapping/out-of-order spans. If we render spans that
+      // move backwards, we can end up duplicating text (e.g. "mainmainmain").
+      final safeStart = start < cursor ? cursor : start;
+      if (end <= safeStart) continue;
+
+      if (safeStart > cursor) {
         children.add(
-          TextSpan(text: lineText.substring(cursor, start), style: baseStyle),
+          TextSpan(
+            text: lineText.substring(cursor, safeStart),
+            style: baseStyle,
+          ),
         );
       }
       children.add(
         TextSpan(
-          text: lineText.substring(start, end),
+          text: lineText.substring(safeStart, end),
           style: baseStyle.copyWith(color: Color(color)),
         ),
       );
@@ -558,118 +851,245 @@ class _TreeSitterHighlighter {
     }
 
     if (cursor < lineText.length) {
-      children.add(TextSpan(text: lineText.substring(cursor), style: baseStyle));
+      children.add(
+        TextSpan(text: lineText.substring(cursor), style: baseStyle),
+      );
     }
 
     return TextSpan(style: baseStyle, children: children);
   }
+
+  List<int> _triplesForLine(int lineStart, int lineEnd) {
+    if (_spans.isEmpty) return const [];
+    final out = <int>[];
+
+    // First span that might intersect this line.
+    var lo = 0;
+    var hi = _spans.length - 1;
+    var first = _spans.length;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      if (_spans[mid].endUtf16 <= lineStart) {
+        lo = mid + 1;
+      } else {
+        first = mid;
+        hi = mid - 1;
+      }
+    }
+
+    for (var i = first; i < _spans.length; i++) {
+      final s = _spans[i];
+      if (s.startUtf16 >= lineEnd) break;
+      final start = s.startUtf16.clamp(lineStart, lineEnd);
+      final end = s.endUtf16.clamp(lineStart, lineEnd);
+      if (end <= start) continue;
+      out.addAll([start, end, s.color]);
+    }
+
+    return out;
+  }
+
+  List<_Span> _capturesToSpans(
+    String text,
+    List<ts.TreeSitterCapture> captures,
+  ) {
+    if (captures.isEmpty) return const [];
+    final byteToUtf16 = _buildByteToUtf16Map(text);
+
+    int mapByte(int b) {
+      if (b <= 0) return 0;
+      if (b >= byteToUtf16.last.$1) return byteToUtf16.last.$2;
+      var lo = 0, hi = byteToUtf16.length - 1;
+      while (lo <= hi) {
+        final mid = (lo + hi) >> 1;
+        final v = byteToUtf16[mid].$1;
+        if (v == b) return byteToUtf16[mid].$2;
+        if (v < b) {
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return byteToUtf16[hi.clamp(0, byteToUtf16.length - 1)].$2;
+    }
+
+    final ranked = <_RankedSpan>[];
+    for (final cap in captures) {
+      final style = _captureStyle(cap.name);
+      if (style == null) continue;
+      final start = mapByte(cap.startByte);
+      final end = mapByte(cap.endByte);
+      if (end <= start) continue;
+      ranked.add(_RankedSpan(start, end, style.color, style.priority));
+    }
+
+    ranked.sort((a, b) {
+      final p = b.priority.compareTo(a.priority);
+      if (p != 0) return p;
+      final s = a.startUtf16.compareTo(b.startUtf16);
+      if (s != 0) return s;
+      return b.endUtf16.compareTo(a.endUtf16);
+    });
+
+    final out = <_Span>[];
+    for (final span in ranked) {
+      _insertNonOverlappingSorted(out, span);
+    }
+    return out;
+  }
+
+  void _insertNonOverlappingSorted(List<_Span> out, _RankedSpan span) {
+    var start = span.startUtf16;
+    final end = span.endUtf16;
+    if (end <= start) return;
+
+    // `out` is always sorted by start and non-overlapping.
+    int lowerBound(int pos) {
+      var lo = 0;
+      var hi = out.length;
+      while (lo < hi) {
+        final mid = (lo + hi) >> 1;
+        if (out[mid].endUtf16 <= pos) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      return lo;
+    }
+
+    int lowerBoundByStart(int pos) {
+      var lo = 0;
+      var hi = out.length;
+      while (lo < hi) {
+        final mid = (lo + hi) >> 1;
+        if (out[mid].startUtf16 < pos) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      return lo;
+    }
+
+    final insertAt = lowerBound(start);
+    var i = insertAt;
+    var cursor = start;
+    final pieces = <_Span>[];
+
+    while (i < out.length) {
+      final existing = out[i];
+      if (existing.startUtf16 >= end) break;
+
+      if (existing.startUtf16 > cursor) {
+        pieces.add(
+          _Span(cursor, existing.startUtf16.clamp(cursor, end), span.color),
+        );
+      }
+
+      if (existing.endUtf16 > cursor) {
+        cursor = existing.endUtf16;
+      }
+      if (cursor >= end) break;
+      i++;
+    }
+
+    if (cursor < end) {
+      pieces.add(_Span(cursor, end, span.color));
+    }
+
+    if (pieces.isEmpty) return;
+    // Insert each piece at its sorted position to preserve ordering.
+    for (final piece in pieces) {
+      out.insert(lowerBoundByStart(piece.startUtf16), piece);
+    }
+  }
+
+  void _applyChangeToSpans(_TextChange change) {
+    if (_spans.isEmpty) return;
+    final delta = change.newEndUtf16 - change.oldEndUtf16;
+    final changedStart = change.startUtf16;
+    final changedOldEnd = change.oldEndUtf16;
+
+    final updated = <_Span>[];
+    for (final s in _spans) {
+      final intersects =
+          s.startUtf16 < changedOldEnd && s.endUtf16 > changedStart;
+      if (intersects) continue;
+
+      if (s.startUtf16 >= changedOldEnd) {
+        updated.add(_Span(s.startUtf16 + delta, s.endUtf16 + delta, s.color));
+      } else {
+        updated.add(s);
+      }
+    }
+    _spans = updated;
+  }
 }
 
-class _HighlightPayload {
-  final String text;
-  final _FileLanguage language;
-  const _HighlightPayload({required this.text, required this.language});
-}
+CodeHighlightTheme _reHighlightTheme(_FileLanguage language) {
+  final key = switch (language) {
+    _FileLanguage.c => 'c',
+    _FileLanguage.javascript => 'javascript',
+    _FileLanguage.dart => 'dart',
+  };
+  final mode = switch (language) {
+    _FileLanguage.c => langC,
+    _FileLanguage.javascript => langJavascript,
+    _FileLanguage.dart => langDart,
+  };
 
-@pragma('vm:entry-point')
-List<List<int>> _highlightWorker(_HighlightPayload payload) {
-  final text = payload.text;
-  final tokens = ts.parseTokens(
-    text,
-    language: switch (payload.language) {
-      _FileLanguage.c => ts.TreeSitterLanguage.c,
-      _FileLanguage.javascript => ts.TreeSitterLanguage.javascript,
-      _FileLanguage.dart => ts.TreeSitterLanguage.dart,
-    },
+  return CodeHighlightTheme(
+    languages: {key: CodeHighlightThemeMode(mode: mode)},
+    theme: vs2015Theme,
   );
+}
 
-  final byteToUtf16 = _buildByteToUtf16Map(text);
-  final lineStarts = _lineStartsUtf16(text);
-  final perLine = List.generate(lineStarts.length, (_) => <int>[]);
-
-  int mapByte(int b) {
-    if (b <= 0) return 0;
-    if (b >= byteToUtf16.last.$1) return byteToUtf16.last.$2;
-    var lo = 0, hi = byteToUtf16.length - 1;
-    while (lo <= hi) {
-      final mid = (lo + hi) >> 1;
-      final v = byteToUtf16[mid].$1;
-      if (v == b) return byteToUtf16[mid].$2;
-      if (v < b) {
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    // Not an exact boundary (should be rare); clamp to previous.
-    return byteToUtf16[hi.clamp(0, byteToUtf16.length - 1)].$2;
+List<int> _lineStartsUtf16ForText(String text) {
+  final starts = <int>[0];
+  for (var i = 0; i < text.length; i++) {
+    if (text.codeUnitAt(i) == 0x0A) starts.add(i + 1);
   }
+  return starts;
+}
 
-  int lineForUtf16(int i) {
-    var lo = 0, hi = lineStarts.length - 1;
-    while (lo <= hi) {
-      final mid = (lo + hi) >> 1;
-      final s = lineStarts[mid];
-      if (s == i) return mid;
-      if (s < i) {
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    return hi.clamp(0, lineStarts.length - 1);
+class _CaptureStyle {
+  final int priority;
+  final int color;
+  const _CaptureStyle(this.priority, this.color);
+}
+
+_CaptureStyle? _captureStyle(String name) {
+  final group = name.split('.').first;
+  switch (group) {
+    case 'comment':
+      return const _CaptureStyle(90, 0xFF6A9955);
+    case 'string':
+      return const _CaptureStyle(80, 0xFFCE9178);
+    case 'number':
+      return const _CaptureStyle(70, 0xFFB5CEA8);
+    case 'keyword':
+      return const _CaptureStyle(60, 0xFF569CD6);
+    case 'type':
+      return const _CaptureStyle(55, 0xFF4EC9B0);
+    case 'function':
+      return const _CaptureStyle(50, 0xFFDCDCAA);
+    case 'constant':
+    case 'boolean':
+    case 'constructor':
+      return const _CaptureStyle(45, 0xFF569CD6);
+    case 'operator':
+    case 'punctuation':
+    case 'delimiter':
+      return const _CaptureStyle(40, 0xFFD4D4D4);
+    case 'variable':
+    case 'property':
+    case 'attribute':
+    case 'identifier':
+      return const _CaptureStyle(30, 0xFF9CDCFE);
+    default:
+      return null;
   }
-
-  int lineEndUtf16(int line) {
-    if (line + 1 >= lineStarts.length) return text.length;
-    // Next line starts after a '\n', so current line ends at (nextStart - 1).
-    return (lineStarts[line + 1] - 1).clamp(0, text.length);
-  }
-
-  void addSpan(int startUtf16, int endUtf16, int color) {
-    if (endUtf16 <= startUtf16) return;
-    final startLine = lineForUtf16(startUtf16);
-    final endLine = lineForUtf16(endUtf16);
-    if (startLine == endLine) {
-      final base = lineStarts[startLine];
-      perLine[startLine].addAll([startUtf16 - base, endUtf16 - base, color]);
-      return;
-    }
-    {
-      final base = lineStarts[startLine];
-      perLine[startLine].addAll([
-        startUtf16 - base,
-        lineEndUtf16(startLine) - base,
-        color,
-      ]);
-    }
-    for (var line = startLine + 1; line < endLine; line++) {
-      final base = lineStarts[line];
-      perLine[line].addAll([0, lineEndUtf16(line) - base, color]);
-    }
-    {
-      final base = lineStarts[endLine];
-      perLine[endLine].addAll([0, endUtf16 - base, color]);
-    }
-  }
-
-  for (final token in tokens) {
-    final start = mapByte(token.startByte);
-    final end = mapByte(token.endByte);
-    if (end <= start) continue;
-    final color = _tokenColor(
-      token,
-      language: payload.language,
-    );
-    if (color == 0xFFD4D4D4) continue;
-    addSpan(start, end, color);
-  }
-
-  for (var i = 0; i < perLine.length; i++) {
-    perLine[i] = _normalizeTriples(perLine[i]);
-  }
-
-  return perLine;
 }
 
 List<(int, int)> _buildByteToUtf16Map(String text) {
@@ -692,242 +1112,135 @@ int _utf8Len(int rune) {
   return 4;
 }
 
-List<int> _lineStartsUtf16(String text) {
-  final starts = <int>[0];
-  for (var i = 0; i < text.length; i++) {
-    final cu = text.codeUnitAt(i);
-    if (cu == 0x0A /* \n */) {
-      starts.add(i + 1);
-    }
-  }
-  if (starts.isEmpty) return const [0];
-  return starts;
+class _Span {
+  final int startUtf16;
+  final int endUtf16;
+  final int color;
+  const _Span(this.startUtf16, this.endUtf16, this.color);
 }
 
-List<int> _normalizeTriples(List<int> triples) {
-  if (triples.isEmpty) return const [];
-  final spans = <({int s, int e, int c})>[];
-  for (var i = 0; i + 2 < triples.length; i += 3) {
-    spans.add((s: triples[i], e: triples[i + 1], c: triples[i + 2]));
-  }
-  spans.sort((a, b) {
-    final s = a.s.compareTo(b.s);
-    if (s != 0) return s;
-    return a.e.compareTo(b.e);
+class _RankedSpan extends _Span {
+  final int priority;
+  const _RankedSpan(
+    super.startUtf16,
+    super.endUtf16,
+    super.color,
+    this.priority,
+  );
+}
+
+class _TextChange {
+  final int startUtf16;
+  final int oldEndUtf16;
+  final int newEndUtf16;
+  final int startByte;
+  final int oldEndByte;
+  final int newEndByte;
+  final int startRow;
+  final int startCol;
+  final int oldEndRow;
+  final int oldEndCol;
+  final int newEndRow;
+  final int newEndCol;
+
+  const _TextChange({
+    required this.startUtf16,
+    required this.oldEndUtf16,
+    required this.newEndUtf16,
+    required this.startByte,
+    required this.oldEndByte,
+    required this.newEndByte,
+    required this.startRow,
+    required this.startCol,
+    required this.oldEndRow,
+    required this.oldEndCol,
+    required this.newEndRow,
+    required this.newEndCol,
   });
-
-  final out = <({int s, int e, int c})>[];
-  for (final span in spans) {
-    if (out.isEmpty) {
-      out.add(span);
-      continue;
-    }
-    final prev = out.last;
-    if (span.s >= prev.e) {
-      out.add(span);
-      continue;
-    }
-    // Overlap: clamp the new span to start after the previous end.
-    final clampedStart = prev.e;
-    if (span.e > clampedStart) {
-      out.add((s: clampedStart, e: span.e, c: span.c));
-    }
-  }
-
-  final flattened = <int>[];
-  for (final span in out) {
-    flattened.addAll([span.s, span.e, span.c]);
-  }
-  return flattened;
 }
 
-int _tokenColor(ts.TreeSitterToken token, {required _FileLanguage language}) {
-  final type = token.type;
-
-  if (type.contains('comment')) return 0xFF6A9955;
-  if (type.contains('string') || type.contains('char')) return 0xFFCE9178;
-  if (type.contains('number')) return 0xFFB5CEA8;
-  if (type.contains('type') || type == 'primitive_type') return 0xFF4EC9B0;
-
-  if (!token.named) {
-    if (_isKeyword(type, language: language)) return 0xFF569CD6;
-    if (_isOperator(type)) return 0xFFD4D4D4;
-    return 0xFFD4D4D4;
+_TextChange _computeChange(String oldText, String newText) {
+  if (oldText == newText) {
+    return const _TextChange(
+      startUtf16: 0,
+      oldEndUtf16: 0,
+      newEndUtf16: 0,
+      startByte: 0,
+      oldEndByte: 0,
+      newEndByte: 0,
+      startRow: 0,
+      startCol: 0,
+      oldEndRow: 0,
+      oldEndCol: 0,
+      newEndRow: 0,
+      newEndCol: 0,
+    );
   }
 
-  if (type.endsWith('identifier') || type == 'identifier') return 0xFF9CDCFE;
-  if (type.contains('function')) return 0xFFDCDCAA;
-
-  return 0xFFD4D4D4;
-}
-
-bool _isOperator(String type) {
-  const ops = {
-    '+',
-    '-',
-    '*',
-    '/',
-    '%',
-    '=',
-    '==',
-    '!=',
-    '<',
-    '<=',
-    '>',
-    '>=',
-    '&&',
-    '||',
-    '!',
-    '&',
-    '|',
-    '^',
-    '~',
-    '<<',
-    '>>',
-    '+=',
-    '-=',
-    '*=',
-    '/=',
-    '%=',
-    '=>',
-    '?.',
-    '??',
-    '??=',
-  };
-  return ops.contains(type);
-}
-
-bool _isKeyword(String type, {required _FileLanguage language}) {
-  switch (language) {
-    case _FileLanguage.c:
-      return const {
-        'return',
-        'if',
-        'else',
-        'for',
-        'while',
-        'do',
-        'switch',
-        'case',
-        'break',
-        'continue',
-        'typedef',
-        'struct',
-        'enum',
-        'static',
-        'const',
-        'void',
-        'int',
-        'char',
-        'float',
-        'double',
-        'long',
-        'short',
-        'signed',
-        'unsigned',
-        'sizeof',
-      }.contains(type);
-    case _FileLanguage.javascript:
-      return const {
-        'function',
-        'return',
-        'if',
-        'else',
-        'for',
-        'while',
-        'do',
-        'switch',
-        'case',
-        'break',
-        'continue',
-        'const',
-        'let',
-        'var',
-        'class',
-        'new',
-        'this',
-        'import',
-        'export',
-        'from',
-        'try',
-        'catch',
-        'finally',
-        'throw',
-        'await',
-        'async',
-        'yield',
-      }.contains(type);
-    case _FileLanguage.dart:
-      return const {
-        'abstract',
-        'as',
-        'assert',
-        'async',
-        'await',
-        'base',
-        'break',
-        'case',
-        'catch',
-        'class',
-        'const',
-        'continue',
-        'covariant',
-        'default',
-        'deferred',
-        'do',
-        'dynamic',
-        'else',
-        'enum',
-        'export',
-        'extends',
-        'extension',
-        'external',
-        'factory',
-        'false',
-        'final',
-        'finally',
-        'for',
-        'Function',
-        'get',
-        'hide',
-        'if',
-        'implements',
-        'import',
-        'in',
-        'interface',
-        'is',
-        'late',
-        'library',
-        'mixin',
-        'new',
-        'null',
-        'of',
-        'on',
-        'operator',
-        'part',
-        'required',
-        'rethrow',
-        'return',
-        'sealed',
-        'set',
-        'show',
-        'static',
-        'super',
-        'switch',
-        'sync',
-        'this',
-        'throw',
-        'true',
-        'try',
-        'typedef',
-        'var',
-        'void',
-        'when',
-        'while',
-        'with',
-        'yield',
-      }.contains(type);
+  var start = 0;
+  final minLen = oldText.length < newText.length
+      ? oldText.length
+      : newText.length;
+  while (start < minLen &&
+      oldText.codeUnitAt(start) == newText.codeUnitAt(start)) {
+    start++;
   }
+
+  var oldEnd = oldText.length;
+  var newEnd = newText.length;
+  while (oldEnd > start &&
+      newEnd > start &&
+      oldText.codeUnitAt(oldEnd - 1) == newText.codeUnitAt(newEnd - 1)) {
+    oldEnd--;
+    newEnd--;
+  }
+
+  final startByte = _utf8LenOfSlice(oldText, 0, start);
+  final oldEndByte = startByte + _utf8LenOfSlice(oldText, start, oldEnd);
+  final newEndByte = startByte + _utf8LenOfSlice(newText, start, newEnd);
+
+  final (sr, sc) = _pointAtUtf16(oldText, start);
+  final (oer, oec) = _pointAtUtf16(oldText, oldEnd);
+  final (ner, nec) = _pointAtUtf16(newText, newEnd);
+
+  return _TextChange(
+    startUtf16: start,
+    oldEndUtf16: oldEnd,
+    newEndUtf16: newEnd,
+    startByte: startByte,
+    oldEndByte: oldEndByte,
+    newEndByte: newEndByte,
+    startRow: sr,
+    startCol: sc,
+    oldEndRow: oer,
+    oldEndCol: oec,
+    newEndRow: ner,
+    newEndCol: nec,
+  );
+}
+
+(int, int) _pointAtUtf16(String text, int utf16Index) {
+  utf16Index = utf16Index.clamp(0, text.length);
+  var row = 0;
+  var lastLineStart = 0;
+  for (var i = 0; i < utf16Index; i++) {
+    if (text.codeUnitAt(i) == 0x0A) {
+      row++;
+      lastLineStart = i + 1;
+    }
+  }
+  final colBytes = _utf8LenOfSlice(text, lastLineStart, utf16Index);
+  return (row, colBytes);
+}
+
+int _utf8LenOfSlice(String text, int start, int end) {
+  start = start.clamp(0, text.length);
+  end = end.clamp(start, text.length);
+  var bytes = 0;
+  for (final rune in text.substring(start, end).runes) {
+    bytes += _utf8Len(rune);
+  }
+  return bytes;
 }
 
 const _seedC = r'''

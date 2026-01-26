@@ -255,3 +255,91 @@ Future<List<TreeSitterCapture>> parseQueryCapturesAsync(
 }) => Isolate.run(
   () => parseQueryCaptures(source, language: language, query: query),
 );
+
+class TreeSitterDocument {
+  final TreeSitterLanguage language;
+  final ffi.Pointer<ffi.Void> _doc;
+
+  TreeSitterDocument._(this.language, this._doc);
+
+  factory TreeSitterDocument.create({required TreeSitterLanguage language}) {
+    final doc = bindings.ts_doc_new(language.index);
+    if (doc == ffi.nullptr) {
+      throw StateError('ts_doc_new returned nullptr');
+    }
+    return TreeSitterDocument._(language, doc);
+  }
+
+  void dispose() {
+    bindings.ts_doc_delete(_doc);
+  }
+
+  bool reparse(String source) {
+    final sourcePtr = source.toNativeUtf8();
+    final ok = bindings.ts_doc_reparse(_doc, sourcePtr.cast<ffi.Char>()) != 0;
+    malloc.free(sourcePtr);
+    return ok;
+  }
+
+  void edit({
+    required int startByte,
+    required int oldEndByte,
+    required int newEndByte,
+    required int startRow,
+    required int startCol,
+    required int oldEndRow,
+    required int oldEndCol,
+    required int newEndRow,
+    required int newEndCol,
+  }) {
+    bindings.ts_doc_edit(
+      _doc,
+      startByte,
+      oldEndByte,
+      newEndByte,
+      startRow,
+      startCol,
+      oldEndRow,
+      oldEndCol,
+      newEndRow,
+      newEndCol,
+    );
+  }
+
+  List<TreeSitterCapture> queryCaptures(String query) {
+    final queryPtr = query.toNativeUtf8();
+    final resultPtr = bindings.ts_doc_query_captures(
+      _doc,
+      queryPtr.cast<ffi.Char>(),
+    );
+    malloc.free(queryPtr);
+
+    if (resultPtr == ffi.nullptr) {
+      return const [];
+    }
+
+    final raw = resultPtr.cast<Utf8>().toDartString();
+    bindings.ts_free(resultPtr.cast());
+
+    final captures = <TreeSitterCapture>[];
+    for (final line in raw.split('\n')) {
+      if (line.isEmpty) continue;
+      final parts = line.split('\t');
+      if (parts.length < 3) continue;
+      final start = int.tryParse(parts[0]);
+      final end = int.tryParse(parts[1]);
+      final name = parts.sublist(2).join('\t');
+      if (start == null || end == null) continue;
+      if (end <= start) continue;
+      captures.add(TreeSitterCapture(startByte: start, endByte: end, name: name));
+    }
+
+    captures.sort((a, b) {
+      final start = a.startByte.compareTo(b.startByte);
+      if (start != 0) return start;
+      return b.endByte.compareTo(a.endByte);
+    });
+
+    return captures;
+  }
+}
